@@ -1,0 +1,1 @@
+Drupal.locale = { 'strings': {"Configure":"Configurer"} };

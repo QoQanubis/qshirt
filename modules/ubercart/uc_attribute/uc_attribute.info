@@ -1,0 +1,13 @@
+name = Attribute
+description = Extends product content type to support product variations.  Allows customers to select these product attributes before purchase.
+dependencies[] = uc_product
+package = "Ubercart - core (optional)"
+core = 7.x
+files[] = tests/uc_attribute.test
+
+; Information added by drupal.org packaging script on 2011-03-11
+version = "7.x-3.0-beta2"
+core = "7.x"
+project = "ubercart"
+datestamp = "1299861070"
+

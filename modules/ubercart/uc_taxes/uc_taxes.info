@@ -1,0 +1,15 @@
+name = Taxes
+description = Define tax rates for customers' geographic locations and products sold.
+dependencies[] = rules
+dependencies[] = uc_store
+dependencies[] = uc_payment
+dependencies[] = uc_product
+package = "Ubercart - core (optional)"
+core = 7.x
+
+; Information added by drupal.org packaging script on 2011-03-11
+version = "7.x-3.0-beta2"
+core = "7.x"
+project = "ubercart"
+datestamp = "1299861070"
+

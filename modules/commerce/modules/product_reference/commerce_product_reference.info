@@ -1,0 +1,18 @@
+name = Product Reference
+description = Defines a product reference field and default display formatters.
+package = Commerce
+dependencies[] = commerce
+dependencies[] = commerce_line_item
+dependencies[] = commerce_price
+dependencies[] = commerce_product
+dependencies[] = options
+core = 7.x
+
+; Simple tests
+files[] = tests/commerce_product_reference.test
+; Information added by drupal.org packaging script on 2011-04-23
+version = "7.x-1.0-beta3"
+core = "7.x"
+project = "commerce"
+datestamp = "1303540316"
+

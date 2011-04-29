@@ -1,0 +1,517 @@
+<?php
+
+/**
+ * @file
+ * Defines features and functions common to the Commerce modules.
+ */
+
+
+/**
+ * Implements hook_permission().
+ */
+function commerce_permission() {
+  $permissions = array(
+    'configure store' => array(
+      'title' => t('Configure store settings'),
+      'description' => t('Allows users to update store currency and contact settings.'),
+      'restrict access' => TRUE,
+    ),
+  );
+
+  return $permissions;
+}
+
+/**
+ * Finds all fields of a particular field type.
+ *
+ * @param $field_type
+ *   The type of field to search for.
+ * @param $entity_type
+ *   Optional entity type to restrict the search to.
+ *
+ * @return
+ *   An array of the matching fields keyed by the field name.
+ */
+function commerce_info_fields($field_type, $entity_type = NULL) {
+  $fields = array();
+
+  // Loop through the fields looking for any fields of the specified type.
+  foreach (field_info_fields() as $field_name => $field) {
+    if ($field['type'] == $field_type) {
+      // Add this field to the return array if no entity type was specified or
+      // if the specified type exists in the field's bundles array.
+      if (empty($entity_type) || in_array($entity_type, array_keys($field['bundles']))) {
+        $fields[$field_name] = $field;
+      }
+    }
+  }
+
+  return $fields;
+}
+
+/**
+ * Deletes a reference to another entity from an entity with a reference field.
+ *
+ * @param $entity_type
+ *   Entity type of the entity with the reference field.
+ * @param $entity
+ *   The entity that contains the reference field.
+ * @param $field_name
+ *   The name of the entity reference field.
+ * @param $ref_entity_id
+ *   The ID of the entity to delete from the reference field.
+ *
+ * @return
+ *   The updated entity with the reference deleted.
+ */
+function commerce_entity_reference_delete($entity_type, $entity, $field_name, $ref_entity_id) {
+  $wrapper = entity_metadata_wrapper($entity_type, $entity);
+
+  // If the reference field is multiple value...
+  if (is_a($wrapper->{$field_name}, 'EntityListWrapper')) {
+    // Loop over every entity referenced by the specified field.
+    foreach ($wrapper->{$field_name} as $delta => $ref_entity_wrapper) {
+      // If its ID matches the specified entity...
+      if ($ref_entity_wrapper->getIdentifier() == $ref_entity_id) {
+        // Unset the referenced entity and return the containing updated entity.
+        $wrapper->{$field_name}->offsetUnset($delta);
+      }
+    }
+  }
+  else {
+    // Otherwise check the reference value directly.
+    if ($wrapper->{$field_name}->getIdentifier() == $ref_entity_id) {
+      $wrapper->{$field_name} = NULL;
+    }
+  }
+
+  return $wrapper->value();
+}
+
+/**
+ * Makes any required form elements in a form unrequired.
+ *
+ * @param $form
+ *   The form array to search for required elements.
+ */
+function commerce_unrequire_form_elements(&$form) {
+  array_walk_recursive($form, '_commerce_unrequire_element');
+}
+
+/**
+ * array_walk_recursive callback: makes an individual element unrequired.
+ *
+ * @param &$value
+ *   The value of the form array being walked.
+ * @param $key
+ *   The key of the form array corresponding to the present value.
+ */
+function _commerce_unrequire_element(&$value, $key) {
+  if ($key === '#required') {
+    $value = FALSE;
+  }
+}
+
+/**
+ * Returns the callback for a form ID as defined by hook_forms().
+ *
+ * @param $form_id
+ *   The form ID to find the callback for.
+ * @return
+ *   A string containing the form's callback function name.
+ *
+ * @see drupal_retrieve_form()
+ * @see hook_forms()
+ */
+function commerce_form_callback($form_id, $form_state) {
+  // If a function named after the $form_id does not exist, look for its
+  // definition in hook_forms().
+  if (!function_exists($form_id)) {
+    $forms = &drupal_static(__FUNCTION__);
+
+    // In cases where many form_ids need to share a central builder function,
+    // such as the product editing form, modules can implement hook_forms(). It
+    // maps one or more form_ids to the correct constructor functions.
+    if (!isset($forms) || !isset($forms[$form_id])) {
+      $forms = module_invoke_all('forms', $form_id, $form_state['build_info']['args']);
+    }
+
+    if (isset($forms[$form_id]['callback'])) {
+      return $forms[$form_id]['callback'];
+    }
+  }
+
+  return $form_id;
+}
+
+/**
+ * Renders a View for display in some other element.
+ *
+ * @param $view_key
+ *   The ID of the View to embed.
+ * @param $display_id
+ *   The ID of the display of the View that will actually be rendered.
+ * @param $arguments
+ *   An array of arguments to pass to the View.
+ *
+ * @return
+ *   The rendered output of the chosen View display.
+ */
+function commerce_embed_view($view_id, $display_id, $arguments) {
+  // Load the cart line item View.
+  $view = views_get_view($view_id);
+  $view->set_display($display_id);
+
+  // Set the specific line items for this order.
+  $view->set_arguments($arguments);
+
+  // Prepare and execute the View query.
+  $view->pre_execute();
+  $view->execute();
+
+  // Return the rendered View.
+  return $view->render();
+}
+
+/**
+ * Returns the e-mail address from which to send commerce related e-mails.
+ *
+ * Currently this is just using the site's e-mail address, but this may be
+ * updated to use a specific e-mail address when we add a settings form for the
+ * store's physical address and contact information.
+ */
+function commerce_email_from() {
+  return variable_get('site_mail', ini_get('sendmail_from'));
+}
+
+/**
+ * Returns the currency code of the site's default currency.
+ */
+function commerce_default_currency() {
+  return variable_get('commerce_default_currency', 'USD');
+}
+
+/**
+ * Returns a single currency array.
+ *
+ * @param $currency_code
+ *   The code of the currency to return or NULL to return the default currency.
+ *
+ * @return
+ *   The specified currency array or FALSE if it does not exist.
+ */
+function commerce_currency_load($currency_code = NULL) {
+  $currencies = commerce_currencies();
+
+  // Check to see if we should return the default currency.
+  if (empty($currency_code)) {
+    $currency_code = commerce_default_currency();
+  }
+
+  return isset($currencies[$currency_code]) ? $currencies[$currency_code] : FALSE;
+}
+
+/**
+ * Returns an array of all available currencies.
+ *
+ * @param $enabled
+ *   Boolean indicating whether or not to return only enabled currencies.
+ * @param $reset
+ *   Boolean indicating whether or not the cache should be reset before currency
+ *     data is loaded and returned.
+ *
+ * @return
+ *   An array of altered currency arrays keyed by the currency code.
+ */
+function commerce_currencies($enabled = FALSE, $reset = FALSE) {
+  global $language;
+
+  // Attempt to load currency data from the cache first.
+  if (!$reset && $currencies = cache_get('commerce_currencies:' . $language->language)) {
+    $currencies = $currencies->data;
+  }
+  else {
+    // Establish some default values for currencies.
+    $defaults = array(
+      'symbol' => '',
+      'minor_unit' => '',
+      'decimals' => 2,
+      'rounding_step' => 0,
+      'thousands_separator' => ',',
+      'decimal_separator' => '.',
+      'symbol_placement' => '',
+      'code_placement' => 'after',
+      'format_callback' => '',
+      'conversion_rate' => 1,
+    );
+
+    // Include the currency file and invoke the currency info hook.
+    module_load_include('inc', 'commerce', 'includes/commerce.currency');
+    $currencies = module_invoke_all('commerce_currency_info');
+    drupal_alter('commerce_currency_info', $currencies);
+
+    // Add default values if they don't exist and convert to objects.
+    foreach ($currencies as $currency_code => $currency) {
+      $currencies[$currency_code] = array_merge($defaults, $currency);
+    }
+
+    cache_set('commerce_currencies:' . $language->language, $currencies);
+  }
+
+  // Return only enabled currencies if specified.
+  if ($enabled) {
+    // Form an array of enabled currencies based on the variable set by the
+    // checkboxes element on the currency settings form.
+    $enabled_currencies = array_diff(array_values(variable_get('commerce_enabled_currencies', array('USD' => 'USD'))), array(0));
+
+    return array_intersect_key($currencies, drupal_map_assoc($enabled_currencies));
+  }
+
+  return $currencies;
+}
+
+/**
+ * Returns an associative array of the specified currency codes.
+ *
+ * @param $enabled
+ *   Boolean indicating whether or not to include only enabled currencies.
+ */
+function commerce_currency_get_code($enabled = FALSE) {
+  return drupal_map_assoc(array_keys(commerce_currencies($enabled)));
+}
+
+/**
+ * Wraps commerce_currency_get_code() for use by the Entity module.
+ */
+function commerce_currency_code_options_list() {
+  return commerce_currency_get_code(TRUE);
+}
+
+/**
+ * Returns the symbol of any or all currencies.
+ *
+ * @param $code
+ *   Optional parameter specifying the code of the currency whose symbol to return.
+ *
+ * @return
+ *   Either an array of all currency symbols keyed by the currency code or a
+ *     string containing the symbol for the specified currency. If a currency is
+ *     specified that does not exist, this function returns FALSE.
+ */
+function commerce_currency_get_symbol($currency_code = NULL) {
+  $currencies = commerce_currencies();
+
+  // Return a specific currency symbol if specified.
+  if (!empty($currency_code)) {
+    if (isset($currencies[$currency_code])) {
+      return $currencies[$currency_code]['symbol'];
+    }
+    else {
+      return FALSE;
+    }
+  }
+
+  // Otherwise turn the array values into the type name only.
+  foreach ($currencies as $currency_code => $currency) {
+    $currencies[$currency_code] = $currency['symbol'];
+  }
+
+  return $currencies;
+}
+
+/**
+ * Formats a price for a particular currency.
+ *
+ * @param $price
+ *   A numeric price amount value.
+ * @param $currency_code
+ *   The three character code of the currency.
+ * @param $object
+ *   When present, the object to which the price is attached.
+ * @param $convert
+ *   Boolean indicating whether or not the amount needs to be converted to a
+ *   decimal price amount when formatting.
+ *
+ * @return
+ *   A fully formatted currency.
+ */
+function commerce_currency_format($amount, $currency_code, $object = NULL, $convert = TRUE) {
+  // First load the currency array.
+  $currency = commerce_currency_load($currency_code);
+
+  // Then convert the price amount to the currency's major unit decimal value.
+  if ($convert = TRUE) {
+    $amount = commerce_currency_amount_to_decimal($amount, $currency_code);
+  }
+
+  // Invoke the custom format callback if specified.
+  if (!empty($currency['format_callback'])) {
+    return $currency['format_callback']($amount, $currency, $object);
+  }
+
+  // Separate the negative symbol from the number itself.
+  if ($amount < 0) {
+    $negative = TRUE;
+    $price = abs($amount);
+  }
+  else {
+    $negative = FALSE;
+  }
+
+  // Format the price as a number.
+  $price = number_format(commerce_currency_round($amount, $currency), $currency['decimals'], $currency['decimal_separator'], $currency['thousands_separator']);
+
+  // Establish the replacement values to format this price for its currency.
+  $replacements = array(
+    '@code_before' => $currency['code_placement'] == 'before' ? $currency['code'] : '',
+    '@symbol_before' => $currency['symbol_placement'] == 'before' ? $currency['symbol'] : '',
+    '@price' => $price,
+    '@symbol_after' => $currency['symbol_placement'] == 'after' ? $currency['symbol'] : '',
+    '@code_after' => $currency['code_placement'] == 'after' ? $currency['code'] : '',
+    '@negative' => $negative ? '-' : '',
+  );
+
+  return trim(t('@code_before @negative@symbol_before@price @symbol_after @code_after', $replacements));
+}
+
+/**
+ * Rounds a price amount for the specified currency.
+ *
+ * Rounding of the minor unit with a currency specific step size. For example,
+ * Swiss Francs are rounded using a step size of 0.05. This means a price of
+ * 10.93 is converted to 10.95.
+ *
+ * @param $amount
+ *   The numeric amount value of the price to be rounded.
+ * @param $currency
+ *   The currency array containing the rounding information pertinent to this
+ *     price. Specifically, this function looks for the 'rounding_step' property
+ *     for the step size to round to, supporting '0.05' and '0.02'. If the value
+ *     is 0, this function performs normal rounding to the nearest supported
+ *     decimal value.
+ *
+ * @return
+ *   The rounded numeric amount value for the price.
+ */
+function commerce_currency_round($amount, $currency) {
+  if (!$currency['rounding_step']) {
+    return round($amount, $currency['decimals']);
+  }
+
+  $modifier = 1 / $currency['rounding_step'];
+
+  return round($amount * $modifier) / $modifier;
+}
+
+/**
+ * Converts a price amount from a currency to the target currency based on the
+ *   current currency conversion rates.
+ *
+ * The Commerce module establishes a default conversion rate for every currency
+ * as 1, so without any additional information there will be a 1:1 conversion
+ * from one currency to the next. Other modules can provide UI based or web
+ * service based alterations to the conversion rate of the defined currencies as
+ * long as every rate is calculated relative to a single base currency. It does
+ * not matter which currency is the base currency as long as the same one is
+ * used for every rate calculation.
+ *
+ * To convert an amount from one currency to another, we simply take the amount
+ * value and multiply it by the current currency's conversion rate divided by
+ * the target currency's conversion rate.
+ *
+ * @param $amount
+ *   The numeric amount value of the price to be rounded.
+ * @param $currency_code
+ *   The currency code for the current currency of the price.
+ * @param $target_currency_code
+ *   The currency code for the target currency of the price.
+ *
+ * @return
+ *   The numeric amount value converted to its equivalent in the target currency.
+ */
+function commerce_currency_convert($amount, $currency_code, $target_currency_code) {
+  $currency = commerce_currency_load($currency_code);
+  $target_currency = commerce_currency_load($target_currency_code);
+
+  return $amount * ($currency['conversion_rate'] / $target_currency['conversion_rate']);
+}
+
+/**
+ * Converts a price amount to an integer value for storage in the database.
+ *
+ * @param $decimal
+ *   The decimal amount to convert to a price amount.
+ * @param $currency_code
+ *   The currency code of the price whose decimals value will be used to
+ *     multiply by the proper factor when converting the decimal amount.
+ * @param $round
+ *   Whether or not the return value should be rounded and cast to an integer;
+ *     defaults to TRUE as necessary for standard price amount column storage.
+ *
+ * @return
+ *   The appropriate price amount based on the currency's decimals value.
+ */
+function commerce_currency_decimal_to_amount($decimal, $currency_code, $round = TRUE) {
+  static $factors;
+
+  // If the divisor for this currency hasn't been calculated yet...
+  if (empty($factors[$currency_code])) {
+    // Load the currency and calculate its factor as a power of 10.
+    $currency = commerce_currency_load($currency_code);
+    $factors[$currency_code] = pow(10, $currency['decimals']);
+  }
+
+  // Ensure the amount has the proper number of decimal places for the currency.
+  if ($round) {
+    $decimal = commerce_currency_round($decimal, commerce_currency_load($currency_code));
+    return (int) ($decimal * $factors[$currency_code]);
+  }
+  else {
+    return $decimal * $factors[$currency_code];
+  }
+}
+
+/**
+ * Converts a price amount to a decimal value based on the currency.
+ *
+ * @param $amount
+ *   The price amount to convert to a decimal value.
+ * @param $currency_code
+ *   The currency code of the price whose decimals value will be used to
+ *     divide by the proper divisor when converting the amount.
+ *
+ * @return
+ *   The decimal amount depending on the number of places the currency uses.
+ */
+function commerce_currency_amount_to_decimal($amount, $currency_code) {
+  static $divisors;
+
+  // If the divisor for this currency hasn't been calculated yet...
+  if (empty($divisors[$currency_code])) {
+    // Load the currency and calculate its divisor as a power of 10.
+    $currency = commerce_currency_load($currency_code);
+    $divisors[$currency_code] = pow(10, $currency['decimals']);
+  }
+
+  return $amount / $divisors[$currency_code];
+}
+
+/**
+ * Returns an associative array of month names keyed by numeric representation.
+ */
+function commerce_months() {
+  return array(
+    '01' => t('January'),
+    '02' => t('February'),
+    '03' => t('March'),
+    '04' => t('April'),
+    '05' => t('May'),
+    '06' => t('June'),
+    '07' => t('July'),
+    '08' => t('August'),
+    '09' => t('September'),
+    '10' => t('October'),
+    '11' => t('November'),
+    '12' => t('December'),
+  );
+}

@@ -1,0 +1,897 @@
+<?php
+
+/**
+ * @file
+ * Defines a field type for referencing products from other entities.
+ */
+
+
+/**
+ * Implements hook_commerce_product_uri().
+ */
+function commerce_product_reference_commerce_product_uri($product) {
+  // If the product has a display context, use its URI.
+  if (!empty($product->display_context)) {
+    return entity_uri($product->display_context['entity_type'], $product->display_context['entity']);
+  }
+}
+
+/**
+ * Implements hook_field_extra_fields().
+ *
+ * This implementation will define "extra fields" on node bundles with product
+ * reference fields to correspond with availabled fields on products. These
+ * fields will then also be present in the node view.
+ */
+function commerce_product_reference_field_extra_fields() {
+  $extra = array();
+
+  // Loop through the product reference fields attached to node bundles.
+  foreach (commerce_info_fields('commerce_product_reference', 'node') as $field_name => $field) {
+    foreach ($field['bundles']['node'] as $bundle_name) {
+      // Attach "extra fields" to the bundle representing fields on products
+      // that may be visible on the bundle.
+
+      foreach (field_info_instances('commerce_product') as $product_bundle_name => $product_fields) {
+        foreach ($product_fields as $product_field_name => $product_field) {
+          $extra['node'][$bundle_name]['display']['product:' . $product_field_name] = array(
+            'label' => t('Product: @label', array('@label' => $product_field['label'])),
+            'description' => t('Field from a referenced product.'),
+            'weight' => $product_field['widget']['weight'],
+          );
+        }
+      }
+    }
+  }
+
+  return $extra;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Override the field manage display screen to add a description to the fields
+ * we embed into the target node from the product.
+ */
+function commerce_product_reference_form_field_ui_display_overview_form_alter(&$form, &$form_state) {
+  if (!module_exists('commerce_product_ui')) {
+    return;
+  }
+
+  $entity_type = $form['#entity_type'];
+  $bundle = $form['#bundle'];
+
+  $product_fields = commerce_product_reference_field_extra_fields();
+
+  if (isset($product_fields[$entity_type][$bundle])) {
+    foreach ($product_fields[$entity_type][$bundle]['display'] as $field_name => $field) {
+      $form['fields'][$field_name]['format']['type']['#description'] = t('Modify the settings for this field on the <a href="@url">product display configuration</a>.', array('@url' => url('admin/commerce/products/types')));
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * When a product is being deleted. Display a message on the confirmation form
+ * saying how many times the product is referenced in all product reference
+ * fields.
+ */
+function commerce_product_reference_form_commerce_product_product_delete_form_alter(&$form, &$form_state) {
+  $items = array();
+
+  // Check the data in every product reference field.
+  foreach (commerce_info_fields('commerce_product_reference') as $field_name => $field) {
+    // Query for any entity referencing the deleted product in this field.
+    $query = new EntityFieldQuery();
+    $query->fieldCondition($field_name, 'product_id', $form_state['product']->product_id, '=');
+    $result = $query->execute();
+
+    // If results were returned...
+    if (!empty($result)) {
+      // Loop over results for each type of entity returned.
+      foreach ($result as $entity_type => $data) {
+        if (($count = count($data)) > 0) {
+          // For line item references, display a message about the inability of
+          // the product to be deleted and disable the submit button.
+          if ($entity_type == 'commerce_line_item') {
+            $form['description']['#markup'] .= '<p>' . t('This product is referenced by a line item and therefore cannot be deleted. Disable it instead.') . '</p>';
+            $form['actions']['submit']['#disabled'] = TRUE;
+            return;
+          }
+
+          // Load the entity information.
+          $entity_info = entity_get_info($entity_type);
+
+          // Add a message regarding the references.
+          $items[] = t('@entity_label: @count', array('@entity_label' => $entity_info['label'], '@count' => $count));
+        }
+      }
+    }
+  }
+
+  if (!empty($items)) {
+    $form['description']['#markup'] .= '<p>' . t('This product is referenced by the following entities: !entity_list', array('!entity_list' => theme('item_list', array('items' => $items)))) . '</p>';
+  }
+}
+
+/**
+ * Implements hook_commerce_product_delete().
+ *
+ * Remove references to this product in all product reference field contents.
+ */
+function commerce_product_reference_commerce_product_delete($product) {
+  // Check the data in every product reference field.
+  foreach (commerce_info_fields('commerce_product_reference') as $field_name => $field) {
+    // Query for any entity referencing the deleted product in this field.
+    $query = new EntityFieldQuery();
+    $query->fieldCondition($field_name, 'product_id', $product->product_id, '=');
+    $result = $query->execute();
+
+    // If results were returned...
+    if (!empty($result)) {
+      // Loop over results for each type of entity returned.
+      foreach ($result as $entity_type => $data) {
+        // Load the entities of the current type.
+        $entities = entity_load($entity_type, array_keys($data));
+
+        // Loop over each entity and remove the reference to the deleted product.
+        foreach ($entities as $entity_id => $entity) {
+          $entity = commerce_entity_reference_delete($entity_type, $entity, $field_name, $product->product_id);
+
+          // Store the changes to the entity.
+          entity_save($entity_type, $entity);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_node_view().
+ *
+ * This implementation adds product fields to the content array of a node on
+ * display if the product contains a non-empty product reference field.
+ */
+function commerce_product_reference_node_view($node, $view_mode = 'full') {
+  $wrapper = entity_metadata_wrapper('node', $node);
+
+  // Loop through product reference fields to see if any exist on this node
+  // type's bundle that is either hidden or displayed with the Add to Cart form
+  // display formatter.
+  foreach (commerce_info_fields('commerce_product_reference', 'node') as $field_name => $field) {
+    if (in_array($node->type, $field['bundles']['node'])) {
+      // Find the default product based on the cardinality of the field.
+      if ($field['cardinality'] == 1) {
+        $product = $wrapper->{$field_name}->value();
+      }
+      else {
+        $product = $wrapper->{$field_name}->get(0)->value();
+      }
+
+      // If a product was found and the reference field is either hidden or set
+      // to display as an Add to Cart form...
+      if (!empty($product) && (!isset($node->content[$field_name]) ||
+        $node->content[$field_name]['#formatter'] == 'commerce_cart_add_to_cart_form')) {
+
+        // Add the display context for these field to the product.
+        $product->display_context = array(
+          'entity_type' => 'node',
+          'entity' => $node,
+        );
+
+        // Loop through the fields on the referenced product's type.
+        foreach (field_info_instances('commerce_product', $product->type) as $product_field_name => $product_field) {
+          // Add the product field to the node's content array.
+          $node->content['product:' . $product_field_name] = field_view_field('commerce_product', $product, $product_field_name, 'node_' . $view_mode);
+
+          // For multiple value references, add context information so the cart
+          // form can do dynamic replacement of fields.
+          if ($field['cardinality'] != 1) {
+            $class = array('node', $node->nid, 'product', $product_field_name);
+
+            $node->content['product:' . $product_field_name] += array(
+              '#prefix' => '<span class="' . drupal_html_class(implode('-', $class)) . '">',
+              '#suffix' => '</span>',
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_field_info().
+ */
+function commerce_product_reference_field_info() {
+  return array(
+    'commerce_product_reference' => array(
+      'label' => t('Product reference'),
+      'description' => t('This field stores the ID of a related product as an integer value.'),
+      'settings' => array(),
+      'instance_settings' => array('referenceable_types' => array()),
+      'default_widget' => 'options_select',
+      'default_formatter' => 'commerce_product_reference_title_link',
+      'property_type' => 'commerce_product',
+      'property_callbacks' => array('commerce_product_reference_property_info_callback'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_instance_settings_form().
+ */
+function commerce_product_reference_field_instance_settings_form($field, $instance) {
+  $settings = $instance['settings'];
+  $options = array();
+  $form = array();
+
+  // Build an options array of the product types.
+  foreach (commerce_product_type_get_name() as $type => $name) {
+    $options[$type] = check_plain($name);
+  }
+
+  $form['referenceable_types'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Product types that can be referenced'),
+    '#description' => t('If no types are selected, any type of product may be referenced.'),
+    '#options' => $options,
+    '#default_value' => is_array($settings['referenceable_types']) ? $settings['referenceable_types'] : array(),
+    '#multiple' => TRUE,
+  );
+
+  return $form;
+}
+
+/**
+ * Implements hook_field_validate().
+ *
+ * Possible error codes:
+ * - 'invalid_product_id': product_id is not valid for the field (not a valid
+ *                         product id, or the product is not referenceable).
+ */
+function commerce_product_reference_field_validate($entity_type, $entity, $field, $instance, $langcode, $items, &$errors) {
+  // Extract product_ids to check.
+  $product_ids = array();
+
+  // First check non-numeric product_id's to avoid losing time with them.
+  foreach ($items as $delta => $item) {
+    if (is_array($item) && !empty($item['product_id'])) {
+      if (is_numeric($item['product_id'])) {
+        $product_ids[] = $item['product_id'];
+      }
+      else {
+        $errors[$field['field_name']][$langcode][$delta][] = array(
+          'error' => 'invalid_product_id',
+          'message' => t('%name: you have specified an invalid product for this reference field.', array('%name' => $instance['label'])),
+        );
+      }
+    }
+  }
+
+  // Prevent performance hog if there are no ids to check.
+  if ($product_ids) {
+    $refs = commerce_product_match_products($field, $instance, '', NULL, $product_ids);
+
+    foreach ($items as $delta => $item) {
+      if (is_array($item)) {
+        if (!empty($item['product_id']) && !isset($refs[$item['product_id']])) {
+          $errors[$field['field_name']][$langcode][$delta][] = array(
+            'error' => 'invalid_product_id',
+            'message' => t('%name: you have specified an invalid product for this reference field.', array('%name' => $instance['label'])),
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_field_is_empty().
+ */
+function commerce_product_reference_field_is_empty($item, $field) {
+  // product_id = 0 îs empty too, which is exactly what we want.
+  return empty($item['product_id']);
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function commerce_product_reference_field_formatter_info() {
+  return array(
+    'commerce_product_reference_sku_link' => array(
+      'label' => t('SKU (link)'),
+      'description' => t('Display the SKU of the referenced product as a link to the node page.'),
+      'field types' => array('commerce_product_reference'),
+    ),
+    'commerce_product_reference_sku_plain' => array(
+      'label' => t('SKU (no link)'),
+      'description' => t('Display the SKU of the referenced product as plain text.'),
+      'field types' => array('commerce_product_reference'),
+    ),
+    'commerce_product_reference_title_link' => array(
+      'label' => t('Title (link)'),
+      'description' => t('Display the title of the referenced product as a link to the node page.'),
+      'field types' => array('commerce_product_reference'),
+    ),
+    'commerce_product_reference_title_plain' => array(
+      'label' => t('Title (no link)'),
+      'description' => t('Display the title of the referenced product as plain text.'),
+      'field types' => array('commerce_product_reference'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function commerce_product_reference_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $result = array();
+
+  // Collect the list of product IDs.
+  $product_ids = array();
+
+  foreach ($items as $delta => $item) {
+    $product_ids[$item['product_id']] = $item['product_id'];
+  }
+
+  $products = commerce_product_load_multiple($product_ids, array('status' => 1));
+
+  switch ($display['type']) {
+    case 'commerce_product_reference_sku_link':
+    case 'commerce_product_reference_sku_plain':
+      foreach ($items as $delta => $item) {
+        if (!empty($products[$item['product_id']])) {
+          if ($display['type'] == 'commerce_product_reference_sku_link') {
+            $result[$delta] = array(
+              '#type' => 'link',
+              '#title' => $products[$item['product_id']]->sku,
+              '#href' => 'admin/commerce/products/' . $item['product_id'],
+            );
+          }
+          else {
+            $result[$delta] = array(
+              '#markup' => check_plain($products[$item['product_id']]->sku),
+            );
+          }
+        }
+      }
+      break;
+
+    case 'commerce_product_reference_title_link':
+    case 'commerce_product_reference_title_plain':
+      foreach ($items as $delta => $item) {
+        if (!empty($products[$item['product_id']])) {
+          if ($display['type'] == 'commerce_product_reference_title_link') {
+            $result[$delta] = array(
+              '#type' => 'link',
+              '#title' => $products[$item['product_id']]->title,
+              '#href' => 'admin/commerce/products/' . $item['product_id'],
+            );
+          }
+          else {
+            $result[$delta] = array(
+              '#markup' => check_plain($products[$item['product_id']]->title),
+            );
+          }
+        }
+      }
+      break;
+  }
+
+  return $result;
+}
+
+/**
+ * Implements hook_field_widget_info().
+ *
+ * Defines widgets available for use with field types as specified in each
+ * widget's $info['field types'] array.
+ */
+function commerce_product_reference_field_widget_info() {
+  $widgets = array();
+
+  // Define an autocomplete textfield widget for product referencing that works
+  // like the Term Reference autocomplete widget.
+  $widgets['commerce_product_reference_autocomplete'] = array(
+    'label' => t('Autocomplete text field'),
+    'description' => t('Display the list of referenceable products as a textfield with autocomplete behaviour.'),
+    'field types' => array('commerce_product_reference'),
+    'settings' => array(
+      'autocomplete_match' => 'contains',
+      'size' => 60,
+      'autocomplete_path' => 'commerce_product/autocomplete',
+    ),
+    'behaviors' => array(
+      'multiple values' => FIELD_BEHAVIOR_CUSTOM,
+    ),
+  );
+
+  return $widgets;
+}
+
+/**
+ * Implements hook_field_widget_info_alter().
+ */
+function commerce_product_reference_field_widget_info_alter(&$info) {
+  $info['options_select']['field types'][] = 'commerce_product_reference';
+  $info['options_buttons']['field types'][] = 'commerce_product_reference';
+}
+
+/**
+ * Implements hook_field_widget_settings_form().
+ */
+function commerce_product_reference_field_widget_settings_form($field, $instance) {
+  $widget = $instance['widget'];
+  $defaults = field_info_widget_settings($widget['type']);
+  $settings = array_merge($defaults, $widget['settings']);
+
+  $form = array();
+
+  // Build the settings for the product reference autocomplete widget.
+  if ($widget['type'] == 'commerce_product_reference_autocomplete') {
+    $form['autocomplete_match'] = array(
+      '#type' => 'select',
+      '#title' => t('Autocomplete matching'),
+      '#default_value' => $settings['autocomplete_match'],
+      '#options' => array(
+        'starts_with' => t('Starts with'),
+        'contains' => t('Contains'),
+      ),
+      '#description' => t('Select the method used to collect autocomplete suggestions. Note that <em>Contains</em> can cause performance issues on sites with thousands of nodes.'),
+    );
+    $form['size'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Size of textfield'),
+      '#default_value' => $settings['size'],
+      '#element_validate' => array('_element_validate_integer_positive'),
+      '#required' => TRUE,
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Implements hook_field_widget_form().
+ *
+ * Used to define the form element for custom widgets.
+ */
+function commerce_product_reference_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  // Define the autocomplete textfield for products.
+  if ($instance['widget']['type'] == 'commerce_product_reference_autocomplete') {
+    $product_ids = array();
+    $skus = array();
+
+    // Build an array of product IDs from this field's values.
+    foreach ($items as $item) {
+      $product_ids[] = $item['product_id'];
+    }
+
+    // Load those products and loop through them to extract their SKUs.
+    $products = commerce_product_load_multiple($product_ids);
+
+    foreach ($product_ids as $product_id) {
+      $skus[] = $products[$product_id]->sku;
+    }
+
+    return $element + array(
+      '#type' => 'textfield',
+      '#default_value' => implode(', ', $skus),
+      '#autocomplete_path' => $instance['widget']['settings']['autocomplete_path'] . '/' . $instance['entity_type'] . '/' . $field['field_name'] . '/' . $instance['bundle'],
+      '#size' => $instance['widget']['settings']['size'],
+      '#maxlength' => 1024,
+      '#element_validate' => array('commerce_product_reference_autocomplete_validate'),
+    );
+  }
+}
+
+/**
+ * Validation callback for a commerce_product_reference autocomplete element.
+ */
+function commerce_product_reference_autocomplete_validate($element, &$form_state, $form) {
+  // If a value was entered into the autocomplete...
+  if (!empty($element['#value'])) {
+    // Translate SKUs into product IDs.
+    $typed_skus = drupal_explode_tags($element['#value']);
+
+    $value = array();
+
+    // Loop through all the entered SKUs...
+    foreach ($typed_skus as $typed_sku) {
+      // To see if the product actually exists...
+      if ($product = commerce_product_load_by_sku(trim($typed_sku))) {
+        // And store its product ID for later validation.
+        $value[] = array('product_id' => $product->product_id);
+      }
+    }
+  }
+  else {
+    $value = array();
+  }
+
+  // Update the value of this element so the field can validate the product IDs.
+  form_set_value($element, $value, $form_state);
+}
+
+/**
+ * Implements hook_field_widget_error().
+ */
+function commerce_product_reference_field_widget_error($element, $error) {
+  form_error($element, $error['message']);
+}
+
+/**
+ * Implements hook_options_list().
+ */
+function commerce_product_reference_options_list($field) {
+  $options = array();
+
+  // Loop through all product matches.
+  foreach (commerce_product_match_products($field) as $product_id => $data) {
+    // Add them to the options list in optgroups by product type.
+    $name = check_plain(commerce_product_type_get_name($data['type']));
+    $options[$name][$product_id] = t('@sku: @title', array('@sku' => $data['sku'], '@title' => $data['title']));
+  }
+
+  // Simplify the options list if only one optgroup exists.
+  if (count($options) == 1) {
+    $options = reset($options);
+  }
+
+  return $options;
+}
+
+/**
+ * Implements hook_commerce_line_item_type_info().
+ */
+function commerce_product_reference_commerce_line_item_type_info() {
+  return array(
+    'product' => array(
+      'type' => 'product',
+      'name' => t('Product'),
+      'description' => t('References a product and displays it with the SKU as the label.'),
+      'add_form_submit_value' => t('Add product'),
+      'base' => 'commerce_product_line_item',
+      'callbacks' => array(
+        'configuration' => 'commerce_product_reference_configure_line_item',
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ *
+ * Adds the line item view mode to the product.
+ */
+function commerce_product_reference_entity_info_alter(&$entity_info) {
+  $entity_info['commerce_product']['view modes']['line_item'] = array(
+    'label' => t('Line item'),
+    'custom settings' => TRUE,
+  );
+}
+
+/**
+ * Implements hook_field_views_data().
+ */
+function commerce_product_reference_field_views_data($field) {
+  $data = field_views_field_default_views_data($field);
+
+  // Build an array of bundles the product reference field appears on.
+  $bundles = array();
+
+  foreach ($field['bundles'] as $entity => $bundles) {
+    $bundles[] = $entity . ' (' . implode(', ', $bundles) . ')';
+  }
+
+  foreach ($data as $table_name => $table_data) {
+    foreach ($table_data as $field_name => $field_data) {
+      if (isset($field_data['filter']['field_name']) && $field_name != 'delta') {
+        $data[$table_name][$field_name]['relationship'] = array(
+          'title' => t('Referenced product'),
+          'help' => t('Appears in: @bundles', array('@bundles' => implode(', ', $bundles))),
+          'base' => 'commerce_product',
+          'base field' => 'product_id',
+          'handler' => 'views_handler_relationship',
+          'label' => t('Product'),
+        );
+      }
+    }
+  }
+
+  return $data;
+}
+
+/**
+ * Creates a required, locked instance of a product reference field on the
+ * specified bundle.
+ *
+ * @param $field_name
+ *   The name of the field; if it already exists, a new instance of the existing
+ *     field will be created. For fields governed by the Commerce modules, this
+ *     should begin with commerce_.
+ * @param $entity_type
+ *   The type of entity the field instance will be attached to.
+ * @param $bundle
+ *   The bundle name of the entity the field instance will be attached to.
+ * @param $label
+ *   The label of the field instance.
+ * @param $weight
+ *   The default weight of the field instance widget and display.
+ */
+function commerce_product_reference_create_instance($field_name, $entity_type, $bundle, $label, $weight = 0) {
+  // If a field type we know should exist isn't found, clear the Field cache.
+  if (!field_info_field_types('commerce_product_reference')) {
+    field_cache_clear();
+  }
+
+  // Look for or add the specified field to the requested entity bundle.
+  $field = field_info_field($field_name);
+  $instance = field_info_instance($entity_type, $field_name, $bundle);
+
+  if (empty($field)) {
+    $field = array(
+      'field_name' => $field_name,
+      'type' => 'commerce_product_reference',
+      'cardinality' => 1,
+      'entity_types' => array($entity_type),
+      'translatable' => FALSE,
+      'locked' => TRUE,
+    );
+    $field = field_create_field($field);
+  }
+
+  if (empty($instance)) {
+    $instance = array(
+      'field_name' => $field_name,
+      'entity_type' => $entity_type,
+      'bundle' => $bundle,
+
+      'label' => $label,
+      'required' => TRUE,
+      'settings' => array(),
+
+      'widget' => array(
+        'type' => 'commerce_product_reference_autocomplete',
+        'weight' => $weight,
+      ),
+
+      'display' => array(
+        'display' => array(
+          'label' => 'hidden',
+        ),
+      ),
+    );
+    field_create_instance($instance);
+  }
+}
+
+/**
+ * Ensures the product line item type contains a product reference field.
+ *
+ * This function is called by the line item module when it is enabled or this
+ * module is enabled. It invokes this function using the configuration_callback
+ * as specified above.
+ */
+function commerce_product_reference_configure_line_item() {
+  commerce_product_reference_create_instance('commerce_product', 'commerce_line_item', 'product', t('Product'));
+
+  // Look for or add a display path textfield to the product line item type.
+  $field_name = 'commerce_display_path';
+  $field = field_info_field($field_name);
+  $instance = field_info_instance('commerce_line_item', $field_name, 'product');
+
+  if (empty($field)) {
+    $field = array(
+      'field_name' => $field_name,
+      'type' => 'text',
+      'cardinality' => 1,
+      'entity_types' => array('commerce_line_item'),
+      'translatable' => FALSE,
+      'locked' => TRUE,
+    );
+    $field = field_create_field($field);
+  }
+
+  if (empty($instance)) {
+    $instance = array(
+      'field_name' => $field_name,
+      'entity_type' => 'commerce_line_item',
+      'bundle' => 'product',
+      'label' => t('Display path'),
+      'required' => TRUE,
+      'settings' => array(),
+
+      'widget' => array(
+        'type' => 'text_textfield',
+      ),
+
+      'display' => array(
+        'display' => array(
+          'label' => 'hidden',
+        ),
+      ),
+    );
+    field_create_instance($instance);
+  }
+}
+
+/**
+ * Returns an appropriate title for this line item.
+ */
+function commerce_product_line_item_title($line_item) {
+  // Currently, just return the product's title.  However, in the future replace
+  // this with the product preview build mode.
+  if ($product = entity_metadata_wrapper('commerce_line_item', $line_item)->commerce_product->value()) {
+    return check_plain($product->title);
+  }
+}
+
+/**
+ * Returns the elements necessary to add a product line item through a line item
+ *   manager widget.
+ */
+function commerce_product_line_item_add_form() {
+  $form = array();
+
+  $form['product_id'] = array(
+    '#type' => 'select',
+    '#title' => t('Product'),
+    '#options' => commerce_product_reference_options_list(array('field_name' => 'line_item_product_selector')),
+  );
+
+  return $form;
+}
+
+/**
+ * Adds the selected product information to a line item added via a line item
+ *   manager widget.
+ *
+ * @param $line_item
+ *   The newly created line item object.
+ * @param $element
+ *   The array representing the widget form element.
+ * @param $form_state
+ *   The present state of the form upon the latest submission.
+ * @param $form
+ *   The actual form array.
+ *
+ * @return
+ *   NULL if all is well or an error message if something goes wrong.
+ */
+function commerce_product_line_item_add_form_submit(&$line_item, $element, &$form_state, $form) {
+  // Load the selected product.
+  $product = commerce_product_load($element['actions']['product_id']['#value']);
+
+  // Populate the line item with the product data.
+  commerce_product_line_item_populate($line_item, $product);
+}
+
+/**
+ * Creates a new product line item populated with the proper product values.
+ *
+ * @param $product
+ *   The fully loaded product referenced by the line item.
+ * @param $quantity
+ *   The quantity to set for the product.
+ * @param $order_id
+ *   The ID of the order the line item belongs to (if available).
+ * @param $display_uri
+ *   A URI array as returned by entity_uri() indicating the display to link the
+ *     product line item to; defaults to NULL for no display.
+ *
+ * @return
+ *   The fully loaded line item populated with the product data as specified.
+ */
+function commerce_product_line_item_new($product, $quantity = 1, $order_id = 0, $display_uri = NULL) {
+  // Create the new line item.
+  $line_item = entity_create('commerce_line_item', array(
+    'type' => 'product',
+    'order_id' => $order_id,
+    'quantity' => $quantity,
+  ));
+
+  // Populate it with the product information.
+  commerce_product_line_item_populate($line_item, $product, $display_uri);
+
+  // Return the line item.
+  return $line_item;
+}
+
+/**
+ * Populates an existing product line item with the product and quantity data.
+ *
+ * @param $line_item
+ *   The fully loaded line item object, populated by reference.
+ * @param $product
+ *   The fully loaded product referenced by the line item.
+ * @param $display_uri
+ *   A URI array as returned by entity_uri() indicating the display to link the
+ *     product line item to; defaults to NULL for no display.
+ */
+function commerce_product_line_item_populate($line_item, $product, $display_uri = NULL) {
+  // Set the label to be the product SKU.
+  $line_item->line_item_label = $product->sku;
+
+  // Wrap the line item and product to easily set field information.
+  $line_item_wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+  $product_wrapper = entity_metadata_wrapper('commerce_product', $product);
+
+  // Add the product reference value to the line item for the right language.
+  $line_item_wrapper->commerce_product = $product->product_id;
+
+  // Add the display URI if specified.
+  if (is_array($display_uri) && !empty($display_uri['path'])) {
+    $line_item_wrapper->commerce_display_path = $display_uri['path'];
+    $line_item->data['display_uri'] = $display_uri;
+  }
+  else {
+    $line_item_wrapper->commerce_display_path = '';
+    $line_item->data['display_uri'] = NULL;
+  }
+
+  // Set the unit price on the line item object.
+  $line_item_wrapper->commerce_unit_price = $product_wrapper->commerce_price->value();
+
+  // Add the base price to the components array.
+  if (!commerce_price_component_load($line_item_wrapper->commerce_unit_price->value(), 'base_price')) {
+    $line_item_wrapper->commerce_unit_price->data = commerce_price_component_add(
+      $line_item_wrapper->commerce_unit_price->value(),
+      'base_price',
+      $line_item_wrapper->commerce_unit_price->value(),
+      TRUE
+    );
+  }
+}
+
+/**
+ * Implements hook_commerce_product_can_delete().
+ */
+function commerce_product_reference_commerce_product_can_delete($product) {
+  // Use EntityFieldQuery to look for line items referencing this product and do
+  // not allow the delete to occur if one exists.
+  $query = new EntityFieldQuery();
+
+  $query
+    ->entityCondition('entity_type', 'commerce_line_item', '=')
+    ->entityCondition('bundle', 'product', '=')
+    ->fieldCondition('commerce_product', 'product_id', $product->product_id, '=')
+    ->count();
+
+  return $query->execute() > 0 ? FALSE : TRUE;
+}
+
+/**
+ * Callback to alter the property info of the reference fields.
+ *
+ * @see commerce_product_reference_field_info().
+ */
+function commerce_product_reference_property_info_callback(&$info, $entity_type, $field, $instance, $field_type) {
+  $name = $field['field_name'];
+  $property = &$info[$entity_type]['bundles'][$instance['bundle']]['properties'][$name];
+
+  $property['type'] = ($field['cardinality'] != 1) ? 'list<commerce_product>' : 'commerce_product';
+  $property['options list'] = 'entity_metadata_field_options_list';
+  $propery['getter callback'] = 'entity_metadata_field_property_get';
+  $property['setter callback'] = 'entity_metadata_field_property_set';
+  $property['property info'] = commerce_product_reference_field_data_property_info();
+
+  unset($property['query callback']);
+}
+
+/**
+ * Defines info for the properties of the Product reference field data structure.
+ */
+function commerce_product_reference_field_data_property_info($name = NULL) {
+  return array(
+    'product_id' => array(
+      'label' => t('Product ID'),
+      'description' => t('The ID of the referenced product.'),
+      'type' => 'integer',
+      'getter callback' => 'entity_property_verbatim_get',
+      'setter callback' => 'entity_property_verbatim_set',
+    ),
+  );
+}

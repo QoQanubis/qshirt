@@ -1,0 +1,18 @@
+name = Address Field
+description = Manage a flexible address field, implementing the xNAL standard.
+core = 7.x
+package = Fields
+
+files[] = addressfield.module
+files[] = includes/addressfield_form.inc
+files[] = includes/addressfield_form_default.inc
+files[] = includes/addressfield_form_br.inc
+files[] = includes/addressfield_form_gb.inc
+files[] = includes/addressfield_form_us.inc
+
+; Information added by drupal.org packaging script on 2011-04-18
+version = "7.x-1.0-alpha2"
+core = "7.x"
+project = "addressfield"
+datestamp = "1303140714"
+

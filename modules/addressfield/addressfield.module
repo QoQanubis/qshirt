@@ -1,0 +1,821 @@
+<?php
+
+/**
+ * @file
+ * Defines a field for attaching country-specific addresses to entities.
+ */
+
+
+/**
+ * Implements hook_theme().
+ */
+function addressfield_theme() {
+  $path = drupal_get_path('module', 'addressfield') . '/theme';
+
+  $templates['addressfield_formatter'] = array(
+    'variables' => array('address' => NULL),
+    'template' => 'addressfield-formatter',
+    'path' => $path,
+  );
+
+  $templates += drupal_find_theme_templates($templates, '.tpl.php', $path);
+
+  return $templates;
+}
+
+/**
+ * Implements hook_field_info()
+ */
+function addressfield_field_info() {
+  $fields = array();
+
+  $fields['addressfield'] = array(
+    'label' => t('Postal address'),
+    'description' => t('A field type used for storing postal addresses according the xNAL standard.'),
+    'settings' => array(),
+    'instance_settings' => array(),
+    'default_widget' => 'addressfield_standard',
+    'default_formatter' => 'addressfield_default',
+    'property_type' => 'addressfield',
+    'property_callbacks' => array('addressfield_property_info_callback'),
+  );
+
+  return $fields;
+}
+
+/**
+ * Implements hook_field_schema()
+ */
+function addressfield_field_schema() {
+  $columns = array(
+    'country' => array(
+      'description' => 'Two letter ISO country code of this address.',
+      'type' => 'varchar',
+      'length' => 2,
+      'not null' => FALSE,
+      'default' => '',
+    ),
+    'xnl' => array(
+      'description' => "XML contents of the xNL element.",
+      'type' => 'text',
+      'size' => 'big',
+      'not null' => FALSE,
+    ),
+    'name_line' => array(
+      'description' => 'Contents of a primary NameLine element in the xNL XML.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => FALSE,
+      'default' => '',
+    ),
+    'first_name' => array(
+      'description' => 'Contents of the FirstName element of a primary PersonName element in the xNL XML.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => FALSE,
+      'default' => '',
+    ),
+    'last_name' => array(
+      'description' => 'Contents of the LastName element of a primary PersonName element in the xNL XML.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => FALSE,
+      'default' => '',
+    ),
+    'organisation_name' => array(
+      'description' => 'Contents of a primary OrganisationName element in the xNL XML.',
+      'type' => 'varchar',
+      'length' => 255,
+      'not null' => FALSE,
+      'default' => '',
+    ),
+    'xal' => array(
+      'description' => "XML contents of the address's xAL element.",
+      'type' => 'text',
+      'size' => 'big',
+      'not null' => FALSE,
+    ),
+    'administrative_area' => array(
+      'description' => 'The administrative area of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'sub_administrative_area' => array(
+      'description' => 'The sub administrative area of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'locality' => array(
+      'description' => 'The locality of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'dependent_locality' => array(
+      'description' => 'The dependent locality of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'postal_code' => array(
+      'description' => 'The postal code of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'thoroughfare' => array(
+      'description' => 'The thoroughfare of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'premise' => array(
+      'description' => 'The premise of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'sub_premise' => array(
+      'description' => 'The sub_premise of this address.',
+      'type' => 'varchar',
+      'length' => 255,
+      'default' => '',
+      'not null' => FALSE,
+    ),
+    'data' => array(
+      'description' => 'Additional data for this address.',
+      'type' => 'text',
+      'size' => 'big',
+      'not null' => FALSE,
+      'serialize' => TRUE,
+    ),
+  );
+
+  return array(
+    'columns' => $columns,
+    // TODO Add indexes.
+  );
+}
+
+/**
+ * Returns an array of default values for the addressfield form elements.
+ */
+function addressfield_default_values() {
+  return array(
+    'country' => variable_get('site_default_country', NULL),
+    'xnl' => '',
+    'name_line' => '',
+    'first_name' => '',
+    'last_name' => '',
+    'organisation_name' => '',
+    'xal' => '',
+    'administrative_area' => '',
+    'sub_administrative_area' => '',
+    'locality' => '',
+    'dependent_locality' => '',
+    'postal_code' => '',
+    'thoroughfare' => '',
+    'premise' => '',
+    'sub_premise' => '',
+    'data' => array(),
+  );
+}
+
+/**
+ * Implements hook_field_is_empty().
+ */
+function addressfield_field_is_empty($item, $field) {
+  // Every address field must have at least a country value or it is considered
+  // empty, even if it has name information.
+  return empty($item['country']);
+}
+
+/**
+ * Implements hook_field_widget_info()
+ */
+function addressfield_field_widget_info() {
+  $widgets = array();
+
+  $widgets['addressfield_standard'] = array(
+    'label' => t('Dynamic address form'),
+    'field types' => array('addressfield'),
+    'settings' => array(
+      'available_countries' => array(),
+      'name_format' => 'name_line',
+    ),
+  );
+
+  return $widgets;
+}
+
+/**
+ * Implements hook_field_widget_settings_form()
+ */
+function addressfield_field_widget_settings_form($field, $instance) {
+  // Necessary for country_get_list().
+  include_once DRUPAL_ROOT . '/includes/locale.inc';
+
+  $widget = $instance['widget'];
+  $defaults = field_info_widget_settings($widget['type']);
+  $settings = array_merge($defaults, $widget['settings']);
+
+  if ($widget['type'] == 'addressfield_standard') {
+    $form['available_countries'] = array(
+      '#type' => 'select',
+      '#multiple' => TRUE,
+      '#title' => t('Available countries'),
+      '#description' => t('If no countries are selected, all countries will be available.'),
+      '#options' => country_get_list(),
+      '#default_value' => $settings['available_countries'],
+    );
+
+    $form['name_format'] = array(
+      '#type' => 'radios',
+      '#title' => t('Default to the following name entry format'),
+      '#description' => t('The default selected here may be overridden on a per-country basis if a country has special name entry requirements.'),
+      '#options' => array(
+        'name_line' => t('Full name text field'),
+        'first_last' => t('First and last name text fields'),
+        'name_line_organisation' => t('Full name text field with an optional company text field'),
+        'first_last_organisation' => t('First and last name textfields with an optional company text field'),
+      ),
+      '#default_value' => $settings['name_format'],
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Implements hook_field_widget_form()
+ */
+function addressfield_field_widget_form(&$form, &$form_state, $field, $instance, $langcode, $items, $delta, $element) {
+  $settings = $instance['widget']['settings'];
+
+  // Necessary for country_get_list().
+  include_once DRUPAL_ROOT . '/includes/locale.inc';
+
+  // Generate a specific key used to identify this element to restore a default
+  // value upon AJAX submission regardless of where this element is in the
+  // $form array.
+  $element_key = implode('|', array($element['#entity_type'], $element['#bundle'], $element['#field_name'], $element['#language'], $element['#delta']));
+
+  // Store the key in the element array as a value so it can be easily retrieved
+  // in context in the $form_state['values'] array in the element validator.
+  $element['element_key'] = array(
+    '#type' => 'value',
+    '#value' => $element_key,
+  );
+
+  // Get the default address used to build the widget form elements, looking
+  // first in the form state, then in the stored value for the field, and then
+  // in the default values of the instance.
+  $address = array();
+
+  if (!empty($form_state['addressfield'][$element_key])) {
+    // Use the value from the form_state if available.
+    $address = $form_state['addressfield'][$element_key];
+  }
+  elseif (!empty($items[$delta]['country'])) {
+    // Else use the saved value for the field.
+    $address = $items[$delta];
+  }
+  else {
+    // Otherwise use the instance default.
+    $address = (array) $instance['default_value'][0];
+  }
+
+  // Merge in default values to provide a value for every expected array key.
+  $address += addressfield_default_values();
+
+  // Add the form elements for the standard widget, which includes a country
+  // select list at the top that reloads the available address elements when the
+  // country is changed.
+  if ($instance['widget']['type'] == 'addressfield_standard') {
+    // Provide a wrapper ID for AJAX replacement based on country selection.
+    $wrapper_id = drupal_html_class($field['field_name']) . '-' . $langcode . '-' . $delta . '-addressfield-wrapper';
+
+    // Wrap everything in a fieldset. This is not the best looking element,
+    // but it's the only wrapper available in Drupal we can properly use
+    // in that context, and it is overridable if necessary.
+    $element['#type'] = 'fieldset';
+
+    $element['#prefix'] = '<div id="' . $wrapper_id . '">';
+    $element['#suffix'] = '</div>';
+
+    // Build an options array of available countries to choose from.
+    $options = country_get_list();
+
+    if (!empty($settings['available_countries'])) {
+      $options = array_intersect_key($options, $settings['available_countries']);
+    }
+
+    // Add an AJAX enabled country select list.
+    $element['country'] = array(
+      '#type' => 'select',
+      '#title' => t('Country'),
+      '#options' => $options,
+      '#default_value' => $address['country'],
+      '#required' => TRUE,
+      '#element_validate' => array('addressfield_standard_country_validate'),
+
+      '#ajax' => array(
+        'callback' => 'addressfield_standard_widget_refresh',
+        'wrapper' => $wrapper_id,
+        'method' => 'replace',
+      ),
+
+      // Don't validate any element when the country is changed.
+      '#limit_validation_errors' => array(),
+    );
+
+    if ($delta > 0) {
+      // On subsequent elements of a field, we make the country field non
+      // required and add a ' - None - ' option to it, so as to allow the
+      // user to remove the address by clearing the country field.
+      $element['country']['#required'] = false;
+      $element['country']['#empty_value'] = '';
+    }
+
+    // Add the name related form elements.
+    $element += addressfield_standard_xnl_form($address, $field, $instance, $langcode, $items, $delta, $element);
+
+    // Add a value element for the full xAL XML data.
+    $element['xal'] = array(
+      '#type' => 'value',
+      '#value' => $address['xal'],
+    );
+
+    $element += addressfield_edit_form($address, $field, $instance, $langcode, $items, $delta, $element);
+  }
+
+  return $element;
+}
+
+/**
+ * Element validate callback: rebuilds the form on country change and stores the
+ *   current address value in the $form_state for retrieval on rebuild.
+ */
+function addressfield_standard_country_validate($element, &$form_state) {
+  // If the country was changed, rebuild the form.
+  if ($element['#default_value'] != $element['#value']) {
+    $form_state['rebuild'] = TRUE;
+  }
+
+  // Search through the form values to find the current address.
+  $address = $form_state['values'];
+
+  $parents = $element['#parents'];
+  array_pop($parents);
+
+  foreach ($parents as $key) {
+    $address = $address[$key];
+  }
+
+  // Store the present address values in the form state for retrieval by the
+  // widget form regardless of where the widget sits in the $form array.
+  $form_state['addressfield'][$address['element_key']] = array_diff_key($address, array('element_key' => ''));
+}
+
+/**
+ * Ajax callback in response to a change of country in an address field.
+ *
+ * The only thing we have to do is to find the proper element to render.
+ */
+function addressfield_standard_widget_refresh($form, $form_state) {
+  // The target element is one element below the triggering country selector.
+  $array_parents = $form_state['triggering_element']['#array_parents'];
+  array_pop($array_parents);
+
+  // Iterate over the form parents to find the element.
+  $element = $form;
+  foreach ($array_parents as $name) {
+    $element = &$element[$name];
+  }
+
+  // Return the address block, but remove the '_weight' element inserted
+  // by the field API.
+  unset($element['_weight']);
+  return $element;
+}
+
+/**
+ * Returns an array of form elements used to collect name information based on
+ *   the widget settings for the instance.
+ */
+function addressfield_standard_xnl_form($address, $field, $instance, $langcode, $items, $delta, $element) {
+  $form = array();
+
+  // Add a value element for the full xNL XML data.
+  $form['xnl'] = array(
+    '#type' => 'value',
+    '#value' => $address['xnl'],
+    '#element_validate' => array('addressfield_standard_xnl_validate')
+  );
+
+  // Provide default fields based on the widget settings.
+  $format = $instance['widget']['settings']['name_format'];
+  $required = $delta == 0 && $instance['required'];
+
+  if (strpos($format, 'name_line') === 0) {
+    $form['name_line'] = array(
+      '#title' => t('Full name'),
+      '#type' => 'textfield',
+      '#size' => 30,
+      '#required' => $required,
+      '#default_value' => $address['name_line'],
+    );
+  }
+  elseif (strpos($format, 'first_last') === 0) {
+    $form['first_name'] = array(
+      '#title' => t('First name'),
+      '#type' => 'textfield',
+      '#size' => 30,
+      '#required' => $required,
+      '#default_value' => $address['first_name'],
+    );
+    $form['last_name'] = array(
+      '#title' => t('Last name'),
+      '#type' => 'textfield',
+      '#size' => 30,
+      '#required' => $required,
+      '#default_value' => $address['last_name'],
+    );
+  }
+
+  if (strpos($format, 'organisation')) {
+    $form['organisation_name'] = array(
+      '#title' => t('Company'),
+      '#type' => 'textfield',
+      '#size' => 30,
+      '#default_value' => $address['organisation_name'],
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Element validate callback: sets the value of the xNL element based on the
+ *   name form elements.
+ */
+function addressfield_standard_xnl_validate($element, &$form_state) {
+  // Find the xNL element's sibling element values to construct the XML.
+  $values = $form_state['values'];
+
+  foreach (array_diff($element['#parents'], array('xnl')) as $key) {
+    $values = $values[$key];
+  }
+
+  // Create the basic NameDetails element that holds the name data.
+  $name_details = new SimpleXMLElement('<NameDetails></NameDetails>');
+
+  // If the name line is set, add that first.
+  if (!empty($values['name_line'])) {
+    $name_details->addAttribute('PartyType', 'Person');
+    $name_details->addChild('NameLine', $values['name_line']);
+  }
+  elseif (!empty($values['first_name']) || !empty($values['last_name'])) {
+    // Otherwise add the first and last name elements.
+    $name_details->addAttribute('PartyType', 'Person');
+    $person = $name_details->addChild('PersonName');
+
+    if (!empty($values['first_name'])) {
+      $person->addChild('FirstName', $values['first_name']);
+    }
+    if (!empty($values['last_name'])) {
+      $person->addChild('LastName', $values['last_name']);
+    }
+  }
+
+  // If the organisation name is set, add it in a DependencyName element.
+  if (!empty($values['organisation_name'])) {
+    // If a name has been set, make the organisation a dependency.
+    if (count($name_details)) {
+      $dependency = $name_details->addChild('DependencyName');
+      $dependency->addAttribute('PartyType', 'Organisation');
+      $dependency->addChild('NameLine', $values['organisation_name']);
+    }
+    else {
+      // Otherwise make the NameDetails element an Organisation and add a name.
+      $name_details->addAttribute('PartyType', 'Organisation');
+      $name_details->addChild('NameLine', $values['organisation_name']);
+    }
+  }
+
+  // Extract the NameDetails element from the XML.
+  $xml = substr($name_details->asXML(), strpos($name_details->asXML(), '<NameDetails'));
+
+  form_set_value($element, $xml, $form_state);
+}
+
+/**
+ * Returns a form snippet for editing an address in a given country.
+ *
+ * @param $country
+ *   The country of the address.
+ * @param array $address
+ *   An address array.
+ * @return
+ *   A form snippet.
+ */
+function addressfield_edit_form(array $address, $field, $instance, $langcode, $items, $delta, $element) {
+  $form_controller = addressfield_get_form_controller($address);
+
+  // Build the form from the controller.
+  $form = $form_controller->form($address, $field, $instance, $langcode, $items, $delta, $element);
+
+  return $form;
+}
+
+/**
+ * Returns the controller for a specific action on an address if it exists.
+ *
+ * @param $address
+ *   The address array.
+ *
+ * @return
+ *    A controller object.
+ */
+function addressfield_get_form_controller(array $address) {
+  static $mapping, $controller_objects = array();
+
+  if (!isset($mapping)) {
+    $mapping = addressfield_default_mapping();
+    drupal_alter('addressfield_mapping', $mapping);
+  }
+
+  if (isset($mapping[strtoupper($address['country'])])) {
+    $controller = $mapping[$address['country']];
+  }
+  else {
+    $controller = $mapping['default'];
+  }
+
+  if (isset($controller)) {
+    if (!isset($controller_objects[$controller])) {
+      $controller_objects[$controller] = new $controller();
+    }
+    return $controller_objects[$controller];
+  }
+}
+
+/**
+ * Default mapping of address forms to countries.
+ */
+function addressfield_default_mapping() {
+  return array(
+    'default' => 'AddressFieldForm_default',
+    'BR' => 'AddressFieldForm_br',
+    'GB' => 'AddressFieldForm_gb',
+    'US' => 'AddressFieldForm_us',
+    // TODO: complete the mapping.
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function addressfield_field_formatter_info() {
+  return array(
+    'addressfield_default' => array(
+      'label' => t('Default'),
+      'field types' => array('addressfield'),
+    ),
+    'addressfield_name' => array(
+      'label' => t('Name only'),
+      'field types' => array('addressfield'),
+      'settings' => array(
+        'organisation' => FALSE,
+      ),
+    )
+  );
+}
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ */
+function addressfield_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+  $element = array();
+
+  // Add the option to include the company name with the full name.
+  if ($display['type'] == 'addressfield_name') {
+    $element['organisation'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Include the company name with the full name.'),
+      '#default_value' => !empty($settings['organisation']),
+    );
+
+    return $element;
+  }
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ */
+function addressfield_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  // Tell whether or not the name formatter includes the company.
+  if ($display['type'] == 'addressfield_name') {
+    return empty($settings['organisation']) ? t('Displaying only the full name.') : t('Displaying the full name and company.');
+  }
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function addressfield_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $settings = $display['settings'];
+  $element = array();
+
+  switch ($display['type']) {
+    case 'addressfield_default':
+      foreach ($items as $delta => $item) {
+        $element[$delta] = array(
+          '#theme' => array('addressfield_formatter__' . $item['country'], 'addressfield_formatter'),
+          '#address' => $item,
+        );
+      }
+      break;
+
+    case 'addressfield_name':
+      // Display parts of the name based on the field's widget settings.
+      $format = $instance['widget']['settings']['name_format'];
+
+      foreach ($items as $delta => $item) {
+        // If the name was entered in a single full name textfield...
+        if (strpos($format, 'name_line') === 0) {
+          // Display the name line including the company name if present.
+          if ($settings['organisation'] && !empty($item['organisation_name'])) {
+            $xnl_name = t('@name_line, @organisation_name', array(
+              '@name_line' => $item['name_line'],
+              '@organisation_name' => $item['organisation_name']
+            ));
+          }
+          else {
+            $xnl_name = t('@name_line', array('@name_line' => $item['name_line']));
+          }
+        }
+        elseif (strpos($format, 'first_last') === 0) {
+          // Display the first and last name including the company name if present.
+          if ($settings['organisation'] && !empty($item['organisation_name'])) {
+            $xnl_name = t('@first_name @last_name, @organisation_name', array(
+              '@first_name' => $item['first_name'],
+              '@last_name' => $item['last_name'],
+              '@organisation_name' => $item['organisation_name']
+            ));
+          }
+          else {
+            $xnl_name = t('@first_name @last_name', array(
+              '@first_name' => $item['first_name'],
+              '@last_name' => $item['last_name']
+            ));
+          }
+        }
+
+        $element[$delta] = array(
+          '#markup' => !empty($xnl_name) ? $xnl_name : t('No name'),
+        );
+      }
+  }
+
+  return $element;
+}
+
+/**
+ * Preprocess function for the addressfield formatter.
+ */
+function template_preprocess_addressfield_formatter(&$variables) {
+  // Encode the address elements.
+  $variables['address'] = array_map('check_plain', $variables['address']);
+
+  // Add the country name to the address.
+  include_once DRUPAL_ROOT . '/includes/locale.inc';
+  $countries = country_get_list();
+  $variables['address']['country_name'] = $countries[$variables['address']['country']];
+}
+
+
+/**
+ * Callback to alter the property info of address fields.
+ *
+ * @see addressfield_field_info().
+ */
+function addressfield_property_info_callback(&$info, $entity_type, $field, $instance, $field_type) {
+  $name = $field['field_name'];
+  $property = &$info[$entity_type]['bundles'][$instance['bundle']]['properties'][$name];
+
+  $property['type'] = ($field['cardinality'] != 1) ? 'list<addressfield>' : 'addressfield';
+  $property['getter callback'] = 'entity_metadata_field_verbatim_get';
+  $property['setter callback'] = 'entity_metadata_field_verbatim_set';
+  $property['auto creation'] = 'addressfield_default_values';
+  $property['property info'] = addressfield_data_property_info();
+
+  unset($property['query callback']);
+}
+
+/**
+ * Defines info for the properties of the address field data structure.
+ *
+  return array(
+    'country' => variable_get('site_default_country', NULL),
+    'xnl' => '',
+    'name_line' => '',
+    'first_name' => '',
+    'last_name' => '',
+    'organisation_name' => '',
+    'xal' => '',
+    'administrative_area' => '',
+    'sub_administrative_area' => '',
+    'locality' => '',
+    'dependent_locality' => '',
+    'postal_code' => '',
+    'thoroughfare' => '',
+    'premise' => '',
+    'sub_premise' => '',
+    'data' => array(),
+  );
+ *
+ */
+function addressfield_data_property_info($name = NULL) {
+  // Build an array of basic property information for the address field.
+  $properties = array(
+    'country' => array(
+      'label' => t('Country'),
+      'options list' => '_addressfield_country_options_list',
+    ),
+    'name_line' => array(
+      'label' => t('Full name'),
+    ),
+    'first_name' => array(
+      'label' => t('First name'),
+    ),
+    'last_name' => array(
+      'label' => t('Last name'),
+    ),
+    'organisation_name' => array(
+      'label' => t('Company'),
+    ),
+    'administrative_area' => array(
+      'label' => t('Administrative area (i.e. State / Province)'),
+    ),
+    'sub_administrative_area' => array(
+      'label' => t('Sub administrative area'),
+    ),
+    'locality' => array(
+      'label' => t('Locality (i.e. City)'),
+    ),
+    'dependent_locality' => array(
+      'label' => t('Dependent locality'),
+    ),
+    'postal_code' => array(
+      'label' => t('Postal code'),
+    ),
+    'thoroughfare' => array(
+      'label' => t('Thoroughfare (i.e. Street address)'),
+    ),
+    'premise' => array(
+      'label' => t('Premise (i.e. Apartment / Suite number)'),
+    ),
+    'name_line' => array(
+      'label' => t('Sub premise'),
+    ),
+  );
+
+  // Add the default values for each of the address field properties.
+  foreach ($properties as $key => &$value) {
+    $value += array(
+      'description' => !empty($name) ? t('!label of field %name', array('!label' => $value['label'], '%name' => $name)) : '',
+      'type' => 'text',
+      'getter callback' => 'entity_property_verbatim_get',
+      'setter callback' => 'entity_property_verbatim_set',
+    );
+  }
+
+  return $properties;
+}
+
+/**
+ * Wraps country_get_list() for use as an Entity API options list.
+ */
+function _addressfield_country_options_list() {
+  // Necessary for country_get_list().
+  if (!function_exists('country_get_list')) {
+    include_once DRUPAL_ROOT . '/includes/locale.inc';
+  }
+
+  return country_get_list();
+}

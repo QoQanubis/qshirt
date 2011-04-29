@@ -1,0 +1,403 @@
+<?php
+
+/**
+ * @file
+ * Defines tax rates and Rules integration for configuring tax rules for
+ *   applicability and display.
+ */
+
+
+/**
+ * Returns an array of tax type objects keyed by name.
+ */
+function commerce_tax_types() {
+  // First check the static cache for a tax types array.
+  $tax_types = &drupal_static(__FUNCTION__);
+
+  // If it did not exist, fetch the types now.
+  if (!isset($tax_types)) {
+    $tax_types = array();
+
+    // Find tax types defined by hook_commerce_tax_type_info().
+    foreach (module_implements('commerce_tax_type_info') as $module) {
+      foreach (module_invoke($module, 'commerce_tax_type_info') as $name => $tax_type) {
+        // Initialize tax rate properties if necessary.
+        $defaults = array(
+          'name' => $name,
+          'display_title' => $tax_type['title'],
+          'description' => '',
+          'display_inclusive' => FALSE,
+          'module' => $module,
+        );
+
+        $tax_types[$name] = array_merge($defaults, $tax_type);
+      }
+    }
+
+    // Last allow the info to be altered by other modules.
+    drupal_alter('commerce_tax_type_info', $tax_types);
+  }
+
+  return $tax_types;
+}
+
+/**
+ * Resets the cached list of tax types.
+ */
+function commerce_tax_types_reset() {
+  $tax_types = &drupal_static('commerce_tax_types');
+  $tax_types = NULL;
+}
+
+/**
+ * Returns a single tax type object.
+ *
+ * @param $name
+ *   The name of the tax type to return.
+ *
+ * @return
+ *   The specified tax type object or FALSE if it did not exist.
+ */
+function commerce_tax_type_load($name) {
+  $tax_types = commerce_tax_types();
+  return empty($tax_types[$name]) ? FALSE : $tax_types[$name];
+}
+
+/**
+ * Returns the titles of every tax type keyed by name.
+ */
+function commerce_tax_type_titles() {
+  $titles = array();
+
+  foreach (commerce_tax_types() as $name => $tax_type) {
+    $titles[$name] = $tax_type['title'];
+  }
+
+  return $titles;
+}
+
+/**
+ * Implements hook_commerce_price_component_type_info().
+ */
+function commerce_tax_commerce_price_component_type_info() {
+  $components = array();
+
+  // Add a price component type for each tax rate that specifies it.
+  foreach (commerce_tax_rates() as $name => $tax_rate) {
+    if ($tax_rate['price_component']) {
+      $components[$tax_rate['price_component']] = array(
+        'title' => $tax_rate['title'],
+        'display_title' => $tax_rate['display_title'],
+      );
+    }
+  }
+
+  return $components;
+}
+
+/**
+ * Returns an array of tax rate objects keyed by name.
+ */
+function commerce_tax_rates() {
+  // First check the static cache for a tax rates array.
+  $tax_rates = &drupal_static(__FUNCTION__);
+
+  // If it did not exist, fetch the types now.
+  if (!isset($tax_rates)) {
+    $tax_rates = array();
+
+    // Find tax rates defined by hook_commerce_tax_rate_info().
+    foreach (module_implements('commerce_tax_rate_info') as $module) {
+      foreach (module_invoke($module, 'commerce_tax_rate_info') as $name => $tax_rate) {
+        // Initialize tax rate properties if necessary.
+        $defaults = array(
+          'name' => $name,
+          'display_title' => $tax_rate['title'],
+          'description' => '',
+          'rate' => 0,
+          'type' => '',
+          'rules_component' => TRUE,
+          'price_component' => 'tax|' . $name,
+          'calculation_callback' => 'commerce_tax_rate_calculate',
+          'module' => $module,
+        );
+
+        $tax_rates[$name] = array_merge($defaults, $tax_rate);
+      }
+    }
+
+    // Last allow the info to be altered by other modules.
+    drupal_alter('commerce_tax_rate_info', $tax_rates);
+  }
+
+  return $tax_rates;
+}
+
+/**
+ * Resets the cached list of tax rates.
+ */
+function commerce_tax_rates_reset() {
+  $tax_rates = &drupal_static('commerce_tax_rates');
+  $tax_rates = NULL;
+}
+
+/**
+ * Returns a single tax rate object.
+ *
+ * @param $name
+ *   The name of the tax rate to return.
+ *
+ * @return
+ *   The specified tax rate object or FALSE if it did not exist.
+ */
+function commerce_tax_rate_load($name) {
+  $tax_rates = commerce_tax_rates();
+  return empty($tax_rates[$name]) ? FALSE : $tax_rates[$name];
+}
+
+/**
+ * Returns the titles of every tax rate keyed by name.
+ */
+function commerce_tax_rate_titles() {
+  $titles = array();
+
+  foreach (commerce_tax_rates() as $name => $tax_rate) {
+    $titles[$name] = $tax_rate['title'];
+  }
+
+  return $titles;
+}
+
+/**
+ * Calculates taxes of a particular type by invoking any components that match
+ *   the tax type.
+ *
+ * @param $tax_type
+ *   The tax type object whose rates should be calculated.
+ * @param $line_item
+ *   The line item to which the taxes should be applied.
+ */
+function commerce_tax_type_calculate_rates($tax_type, $line_item) {
+  // Load all the rule components.
+  $components = rules_get_components(FALSE, 'action');
+
+  // Loop over each tax rate in search of matching components.
+  foreach (commerce_tax_rates() as $name => $tax_rate) {
+    // If the current rate matches the type and specifies a default component...
+    if ($tax_rate['type'] == $tax_type['name'] && $tax_rate['rules_component']) {
+      $component_name = 'commerce_tax_rate_' . $name;
+
+      // If we can load the current rate's component...
+      if (!empty($components[$component_name])) {
+        // Invoke it with the line item.
+        rules_invoke_component($component_name, $line_item);
+      }
+    }
+  }
+
+  // Allow modules handling tax application on their own to apply rates of the
+  // current type as well.
+  module_invoke_all('commerce_tax_type_calculate_rates', $tax_type, $line_item);
+}
+
+/**
+ * Applies a tax rate to the unit price of a line item.
+ *
+ * @param $tax_rate
+ *   The tax rate to apply to the line item.
+ * @param $line_item
+ *   The line item whose unit price will be modified to include the tax.
+ */
+function commerce_tax_rate_apply($tax_rate, $line_item) {
+  // If a valid rate is specified...
+  if (is_numeric($tax_rate['rate'])) {
+    $wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+
+    // Invoke the tax rate's calculation callback and apply the returned tax
+    // price to the line item.
+    if ($tax_price = $tax_rate['calculation_callback']($tax_rate, $wrapper)) {
+      // Add the tax to the unit price's data array along with a display inclusive
+      // property used to track whether or not the tax is included in the price.
+      $included = FALSE;
+
+      // If the rate specifies a valid tax type that is display inclusive...
+      if (($tax_type = commerce_tax_type_load($tax_rate['type'])) &&
+        $tax_type['display_inclusive']) {
+        // Include the tax amount in the displayed unit price.
+        $wrapper->commerce_unit_price->amount = $wrapper->commerce_unit_price->amount->value() + $tax_price['amount'];
+        $included = TRUE;
+      }
+
+      // Update the data array with the tax component.
+      $wrapper->commerce_unit_price->data = commerce_price_component_add(
+        $wrapper->commerce_unit_price->value(),
+        $tax_rate['price_component'],
+        $tax_price,
+        $included
+      );
+    }
+  }
+}
+
+/**
+ * Calculates a price array for the tax on the unit price of a line item.
+ *
+ * @param $tax_rate
+ *   The tax rate array for the tax to calculate.
+ * @param $line_item_wrapper
+ *   An entity_metadata_wrapper() for the line item whose unit price should be
+ *     used in the tax calculation.
+ *
+ * @return
+ *   The tax price array or FALSE if the tax is already applied.
+ */
+function commerce_tax_rate_calculate($tax_rate, $line_item_wrapper) {
+  // By default, do not duplicate a tax that's already on the line item.
+  if (!commerce_price_component_load($line_item_wrapper->commerce_unit_price->value(), $tax_rate['price_component'])) {
+    return array(
+      'amount' => $line_item_wrapper->commerce_unit_price->amount->value() * $tax_rate['rate'],
+      'currency_code' => $line_item_wrapper->commerce_unit_price->currency_code->value(),
+      'data' => array(
+        'tax_rate' => $tax_rate,
+      ),
+    );
+  }
+
+  return FALSE;
+}
+
+/**
+ * Implements hook_field_attach_form().
+ */
+function commerce_tax_field_attach_form($entity_type, $entity, &$form, &$form_state, $langcode) {
+  // Alter price widgets on the product form to have tax inclusive price entry.
+  if ($entity_type == 'commerce_product') {
+    // Build an array of tax types that are display inclusive.
+    $inclusive_types = array();
+
+    foreach (commerce_tax_types() as $name => $tax_type) {
+      if ($tax_type['display_inclusive']) {
+        $inclusive_types[$name] = $tax_type['title'];
+      }
+    }
+
+    // Build an options array of tax rates of these types.
+    $options = array();
+
+    foreach (commerce_tax_rates() as $name => $tax_rate) {
+      if (in_array($tax_rate['type'], array_keys($inclusive_types))) {
+        $options[$inclusive_types[$tax_rate['type']]][$name] = t('Including @title', array('@title' => $tax_rate['title']));
+      }
+    }
+
+    // Only alter the form if there are available tax rates...
+    if (!empty($options)) {
+      // Get an array of price fields attached to products.
+      $fields = commerce_info_fields('commerce_price', 'commerce_product');
+
+      // Loop over each child element of the form.
+      foreach (element_children($form) as $key) {
+        // If the current element is for a price field...
+        if (in_array($key, array_keys($fields))) {
+          // Loop over each of its child items...
+          foreach (element_children($form[$key][$form[$key]['#language']]) as $delta) {
+            // Find the default value for the tax included element.
+            $default = '';
+
+            if (!empty($form[$key][$form[$key]['#language']][$delta]['data']['#default_value']['components'])) {
+              foreach (array_keys($options) as $optgroup) {
+                foreach ($options[$optgroup] as $name => $title) {
+                  $tax_rate = commerce_tax_rate_load($name);
+
+                  // If this tax rate's component is included in the price, it
+                  // must be the default!
+                  foreach ($form[$key][$form[$key]['#language']][$delta]['data']['#default_value']['components'] as $component) {
+                    if ($component['included'] && $component['name'] == $tax_rate['price_component']) {
+                      $default = $name;
+                    }
+                  }
+                }
+              }
+            }
+
+            // If there is only one option group, flatten the options array.
+            if (count($options) == 1) {
+              $options = reset($options);
+            }
+
+            $form[$key][$form[$key]['#language']][$delta]['currency_code']['#title'] = '&nbsp;';
+
+            $form[$key][$form[$key]['#language']][$delta]['include_tax'] = array(
+              '#type' => 'select',
+              '#title' => t('Include tax in this price'),
+              '#description' => t('Saving prices tax inclusive will bypass later calculations for the specified tax.'),
+              '#options' => $options,
+              '#default_value' => $default,
+              '#required' => FALSE,
+              '#empty_value' => '',
+              '#suffix' => '<div class="commerce-price-tax-included-clearfix"></div>',
+              '#attached' => array(
+                'css' => array(drupal_get_path('module', 'commerce_tax') . '/theme/commerce_tax.css'),
+              ),
+            );
+
+            // Append a validation handler to the price field's element validate
+            // array to add the included tax price component after the price has
+            // been converted from a decimal.
+            $form[$key][$form[$key]['#language']][$delta]['#element_validate'][] = 'commerce_tax_price_field_validate';
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Validate callback for the tax inclusion select list that serves to reset the
+ *   data array based on the selected tax.
+ */
+function commerce_tax_price_field_validate($element, &$form_state) {
+  // Build an array of form parents to the price array.
+  $parents = $element['#parents'];
+
+  // Get the price array from the form state.
+  $price = $form_state['values'];
+
+  foreach ($parents as $parent) {
+    $price = $price[$parent];
+  }
+
+  // If a tax was specified...
+  if (!empty($element['include_tax']['#value'])) {
+    // Remove the include_tax value from the price array and reset the components.
+    unset($price['include_tax']);
+    $price['data']['components'] = array();
+
+    // Load and reverse apply the tax.
+    $tax_rate = commerce_tax_rate_load($element['include_tax']['#value']);
+    $amount = $price['amount'] / (1 + $tax_rate['rate']);
+
+    // Add a base price to the data array.
+    $component = array(
+      'amount' => $amount,
+      'currency_code' => $price['currency_code'],
+      'data' => array(),
+    );
+
+    $price['data'] = commerce_price_component_add($price, 'base_price', $component, TRUE);
+
+    // Add the tax to the data array.
+    $component['amount'] = $price['amount'] - $amount;
+
+    $price['data'] = commerce_price_component_add($price, $tax_rate['price_component'], $component, TRUE);
+  }
+  else {
+    // Otherwise reset the components array.
+    unset($price['data']['components']);
+  }
+
+  // Add the data array to the form state.
+  $parents[] = 'data';
+
+  form_set_value(array('#parents' => $parents), $price['data'], $form_state);
+}
